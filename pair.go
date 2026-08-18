@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"time"
 
 	"go.mau.fi/libsignal/ecc"
@@ -64,6 +65,7 @@ func (cli *Client) handlePairDevice(ctx context.Context, node *waBinary.Node) {
 	}
 
 	evt := &events.QR{Codes: make([]string, 0, len(pairDevice.GetChildren()))}
+	refs := make([][]byte, 0, len(pairDevice.GetChildren()))
 	for i, child := range pairDevice.GetChildren() {
 		if child.Tag != "ref" {
 			cli.Log.Warnf("pair-device node contains unexpected child tag %s at index %d", child.Tag, i)
@@ -75,8 +77,10 @@ func (cli *Client) handlePairDevice(ctx context.Context, node *waBinary.Node) {
 			continue
 		}
 		evt.Codes = append(evt.Codes, cli.makeQRData(content, cli.getQRClientType()))
+		refs = append(refs, slices.Clone(content))
 	}
 
+	cli.dispatchEvent(&qrRefsEvent{refs: refs})
 	cli.dispatchEvent(evt)
 }
 
@@ -150,6 +154,9 @@ func (cli *Client) handlePairSuccess(ctx context.Context, node *waBinary.Node) {
 }
 
 func (cli *Client) handlePair(ctx context.Context, deviceIdentityBytes []byte, reqID, businessName, platform string, jid, lid types.JID) error {
+	cli.pairingLock.Lock()
+	defer cli.pairingLock.Unlock()
+
 	var deviceIdentityContainer waAdv.ADVSignedDeviceIdentityHMAC
 	err := proto.Unmarshal(deviceIdentityBytes, &deviceIdentityContainer)
 	if err != nil {

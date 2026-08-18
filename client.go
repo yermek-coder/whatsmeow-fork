@@ -132,6 +132,7 @@ type Client struct {
 	appStateKeyRequestsLock sync.RWMutex
 
 	messageSendLock sync.Mutex
+	pairingLock     sync.Mutex
 
 	tcTokenSenderTS            map[types.JID]time.Time
 	tcTokenSenderTSLock        sync.Mutex

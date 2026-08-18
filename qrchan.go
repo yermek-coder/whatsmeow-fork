@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.mau.fi/util/random"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
@@ -55,30 +56,64 @@ var (
 )
 
 type qrChannel struct {
-	sync.Mutex
 	cli       *Client
 	log       waLog.Logger
 	ctx       context.Context
 	handlerID uint32
 	closed    atomic.Bool
+	active    atomic.Bool
+	outputMu  sync.Mutex
 	output    chan<- QRChannelItem
 	stopQRs   chan struct{}
+	refs      chan [][]byte
+	refresh   chan struct{}
+	timeout   func(int) time.Duration
 }
 
-func (qrc *qrChannel) close() bool {
-	return qrc.closed.Swap(true) == false
+type qrRefsEvent struct{ refs [][]byte }
+type companionRegRefreshEvent struct{}
+
+func (qrc *qrChannel) emit(item QRChannelItem, blocking bool) bool {
+	qrc.outputMu.Lock()
+	defer qrc.outputMu.Unlock()
+	if qrc.closed.Load() {
+		return false
+	}
+	if blocking {
+		qrc.output <- item
+		return true
+	}
+	select {
+	case qrc.output <- item:
+		return true
+	default:
+		return false
+	}
 }
 
-func (qrc *qrChannel) emitQRs(codes []string) {
-	var nextCode string
+func (qrc *qrChannel) finish(item QRChannelItem, disconnect bool) bool {
+	qrc.outputMu.Lock()
+	if qrc.closed.Swap(true) {
+		qrc.outputMu.Unlock()
+		return false
+	}
+	close(qrc.stopQRs)
+	qrc.output <- item
+	close(qrc.output)
+	qrc.outputMu.Unlock()
+	go qrc.cli.RemoveEventHandler(qrc.handlerID)
+	if disconnect {
+		qrc.cli.Disconnect()
+	}
+	return true
+}
+
+func (qrc *qrChannel) emitQRs(refs [][]byte) {
+	var currentRef []byte
 	for {
-		if len(codes) == 0 {
-			if qrc.close() {
+		if len(refs) == 0 {
+			if qrc.finish(QRChannelTimeout, true) {
 				qrc.log.Debugf("Ran out of QR codes, closing channel with status %s and disconnecting client", QRChannelTimeout)
-				qrc.output <- QRChannelTimeout
-				close(qrc.output)
-				go qrc.cli.RemoveEventHandler(qrc.handlerID)
-				qrc.cli.Disconnect()
 			} else {
 				qrc.log.Debugf("Ran out of QR codes, but channel is already closed")
 			}
@@ -87,40 +122,58 @@ func (qrc *qrChannel) emitQRs(codes []string) {
 			qrc.log.Debugf("QR code channel is closed, exiting QR emitter")
 			return
 		}
-		timeout := 20 * time.Second
-		if len(codes) == 6 {
-			timeout = 60 * time.Second
-		}
-		nextCode, codes = codes[0], codes[1:]
-		qrc.log.Debugf("Emitting QR code %s", nextCode)
-		select {
-		case qrc.output <- QRChannelItem{Code: nextCode, Timeout: timeout, Event: QRChannelEventCode}:
-		default:
+		timeout := qrc.timeout(len(refs))
+		currentRef, refs = refs[0], refs[1:]
+		code := qrc.cli.makeQRData(currentRef, qrc.cli.getQRClientType())
+		qrc.log.Debugf("Emitting QR code %s", code)
+		qrc.active.Store(true)
+		if !qrc.emit(QRChannelItem{Code: code, Timeout: timeout, Event: QRChannelEventCode}, false) {
+			qrc.active.Store(false)
 			qrc.log.Debugf("Output channel didn't accept code, exiting QR emitter")
-			if qrc.close() {
-				close(qrc.output)
-				go qrc.cli.RemoveEventHandler(qrc.handlerID)
-				qrc.cli.Disconnect()
-			}
+			qrc.finish(QRChannelTimeout, true)
 			return
 		}
-		select {
-		case <-time.After(timeout):
-		case <-qrc.stopQRs:
-			qrc.log.Debugf("Got signal to stop QR emitter")
-			return
-		case <-qrc.cli.expectedDisconnect.GetChan():
-			qrc.log.Debugf("Client is expected to disconnect, stopping QR emitter")
-			return
-		case <-qrc.ctx.Done():
-			qrc.log.Debugf("Context is done, stopping QR emitter")
-			if qrc.close() {
-				close(qrc.output)
-				go qrc.cli.RemoveEventHandler(qrc.handlerID)
-				qrc.cli.Disconnect()
+		timer := time.NewTimer(timeout)
+	waitForRotation:
+		for {
+			select {
+			case <-timer.C:
+				break waitForRotation
+			case <-qrc.refresh:
+				qrc.cli.pairingLock.Lock()
+				if qrc.cli.Store.ID != nil || qrc.closed.Load() {
+					qrc.cli.pairingLock.Unlock()
+					continue
+				}
+				qrc.cli.Store.AdvSecretKey = random.Bytes(32)
+				refreshedCode := qrc.cli.makeQRData(currentRef, qrc.cli.getQRClientType())
+				qrc.cli.pairingLock.Unlock()
+				if !qrc.emit(QRChannelItem{Code: refreshedCode, Timeout: timeout, Event: QRChannelEventCode}, false) {
+					qrc.log.Debugf("Output channel didn't accept refreshed code")
+				}
+			case <-qrc.stopQRs:
+				timer.Stop()
+				qrc.log.Debugf("Got signal to stop QR emitter")
+				return
+			case <-qrc.cli.expectedDisconnect.GetChan():
+				timer.Stop()
+				qrc.log.Debugf("Client is expected to disconnect, stopping QR emitter")
+				return
+			case <-qrc.ctx.Done():
+				timer.Stop()
+				qrc.log.Debugf("Context is done, stopping QR emitter")
+				qrc.finish(QRChannelTimeout, true)
+				return
 			}
 		}
 	}
+}
+
+func qrCodeTimeout(remainingRefs int) time.Duration {
+	if remainingRefs == 6 {
+		return 60 * time.Second
+	}
+	return 20 * time.Second
 }
 
 func (qrc *qrChannel) handleEvent(rawEvt any) {
@@ -130,42 +183,58 @@ func (qrc *qrChannel) handleEvent(rawEvt any) {
 	}
 	var outputType QRChannelItem
 	switch evt := rawEvt.(type) {
-	case *events.QR:
-		qrc.log.Debugf("Received QR code event, starting to emit codes to channel")
-		go qrc.emitQRs(slices.Clone(evt.Codes))
+	case *qrRefsEvent:
+		qrc.log.Debugf("Received QR refs event, starting to emit codes to channel")
+		refs := make([][]byte, len(evt.refs))
+		for i := range evt.refs {
+			refs[i] = slices.Clone(evt.refs[i])
+		}
+		select {
+		case qrc.refs <- refs:
+		default:
+		}
+		return
+	case *companionRegRefreshEvent:
+		if !qrc.active.Load() {
+			return
+		}
+		select {
+		case qrc.refresh <- struct{}{}:
+		default:
+		}
 		return
 	case *events.QRScannedWithoutMultidevice:
 		qrc.log.Debugf("QR code scanned without multidevice enabled")
-		qrc.output <- QRChannelScannedWithoutMultidevice
+		qrc.emit(QRChannelScannedWithoutMultidevice, true)
 		return
 	case *events.PairPasskeyRequest:
-		qrc.output <- QRChannelItem{
+		qrc.emit(QRChannelItem{
 			Event:          QRChannelEventPasskeyRequest,
 			PasskeyRequest: evt,
-		}
+		}, true)
 		return
 	case *events.PairPasskeyConfirmation:
 		if evt.SkipHandoffUX {
 			qrc.log.Debugf("Sending automatic passkey confirmation")
 			err := qrc.cli.SendPasskeyConfirmation(qrc.ctx)
 			if err != nil {
-				qrc.output <- QRChannelItem{
+				qrc.emit(QRChannelItem{
 					Event: QRChannelEventError,
 					Error: fmt.Errorf("failed to send passkey confirmation automatically: %w", err),
-				}
+				}, true)
 			}
 		} else {
-			qrc.output <- QRChannelItem{
+			qrc.emit(QRChannelItem{
 				Event:               QRChannelEventPasskeyResponse,
 				PasskeyConfirmation: evt,
-			}
+			}, true)
 		}
 		return
 	case *events.PairPasskeyError:
-		qrc.output <- QRChannelItem{
+		qrc.emit(QRChannelItem{
 			Event: QRChannelEventError,
 			Error: evt.Error,
-		}
+		}, true)
 		return
 	case *events.ClientOutdated:
 		outputType = QRChannelClientOutdated
@@ -183,16 +252,11 @@ func (qrc *qrChannel) handleEvent(rawEvt any) {
 	default:
 		return
 	}
-	close(qrc.stopQRs)
-	if qrc.close() {
+	if qrc.finish(outputType, false) {
 		qrc.log.Debugf("Closing channel with status %+v", outputType)
-		qrc.output <- outputType
-		close(qrc.output)
 	} else {
 		qrc.log.Debugf("Got status %+v, but channel is already closed", outputType)
 	}
-	// Has to be done in background because otherwise there's a deadlock with eventHandlersLock
-	go qrc.cli.RemoveEventHandler(qrc.handlerID)
 }
 
 // GetQRChannel returns a channel that automatically outputs a new QR code when the previous one expires.
@@ -216,7 +280,18 @@ func (cli *Client) GetQRChannel(ctx context.Context) (<-chan QRChannelItem, erro
 		cli:     cli,
 		log:     cli.Log.Sub("QRChannel"),
 		ctx:     ctx,
+		refs:    make(chan [][]byte, 1),
+		refresh: make(chan struct{}, 16),
+		timeout: qrCodeTimeout,
 	}
 	qrc.handlerID = cli.AddEventHandler(qrc.handleEvent)
+	go func() {
+		select {
+		case refs := <-qrc.refs:
+			qrc.emitQRs(refs)
+		case <-qrc.stopQRs:
+		case <-ctx.Done():
+		}
+	}()
 	return ch, nil
 }

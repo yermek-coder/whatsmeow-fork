@@ -498,6 +498,8 @@ func (cli *Client) handleNotification(ctx context.Context, node *waBinary.Node) 
 		cli.handlePrivacyTokenNotification(ctx, node)
 	case "link_code_companion_reg":
 		go cli.tryHandleCodePairNotification(ctx, node)
+	case "companion_reg_refresh":
+		cli.handleCompanionRegRefresh(node)
 	case "newsletter":
 		cli.handleNewsletterNotification(ctx, node)
 	case "mex":
@@ -512,4 +514,13 @@ func (cli *Client) handleNotification(ctx context.Context, node *waBinary.Node) 
 	default:
 		cli.Log.Debugf("Unhandled notification with type %s", notifType)
 	}
+}
+
+func (cli *Client) handleCompanionRegRefresh(node *waBinary.Node) {
+	_, hasRefresh := node.GetOptionalChildByTag("companion_reg_refresh")
+	_, hasRotate := node.GetOptionalChildByTag("pair-device-rotate-qr")
+	if !hasRefresh && !hasRotate {
+		return
+	}
+	cli.dispatchEvent(&companionRegRefreshEvent{})
 }
