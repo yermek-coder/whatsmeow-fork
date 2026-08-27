@@ -113,7 +113,7 @@ func (qrc *qrChannel) emitQRs(refs [][]byte) {
 	for {
 		if len(refs) == 0 {
 			if qrc.finish(QRChannelTimeout, true) {
-				qrc.log.Debugf("Ran out of QR codes, closing channel with status %s and disconnecting client", QRChannelTimeout)
+				qrc.log.Debugf("Ran out of QR codes, closing channel with status %s and disconnecting client", QRChannelTimeout.Event)
 			} else {
 				qrc.log.Debugf("Ran out of QR codes, but channel is already closed")
 			}
