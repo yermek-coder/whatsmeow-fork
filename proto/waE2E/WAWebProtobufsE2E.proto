@@ -963,6 +963,7 @@ message ProtocolMessage {
 		AI_METADATA_OPERATION = 35;
 		MARK_AS_VERIFIED_ACTION = 36;
 		COEX_STATE_SYNC = 37;
+		ACP2_SETTING = 39;
 	}
 
 	optional WACommon.MessageKey key = 1;
@@ -995,6 +996,7 @@ message ProtocolMessage {
 	optional WAWebProtobufsAICommon.AIMetadataOperation aiMetadataOperation = 31;
 	optional MarkAsVerifiedAction markAsVerifiedAction = 32;
 	optional WAWebProtobufsServerSync.CoexStateSync coexStateSync = 33;
+	optional WACommon.ACP2Setting acp2Setting = 35;
 }
 
 message CloudAPIThreadControlNotification {
@@ -1626,6 +1628,7 @@ message MessageContextInfo {
 	optional WAWebProtobufsAea.NonE2EEAttestation accountEncryptionAttestation = 18;
 	optional bytes associatedPrimaryIdentityKey = 19;
 	optional string teeContextAnchorMessageID = 20;
+	optional WACommon.ACP2Setting acp2Setting = 21;
 }
 
 message InteractiveAnnotation {
@@ -1860,6 +1863,7 @@ message Message {
 	optional StatusLinkPreviewMetadata statusLinkPreviewMetadata = 130;
 	optional FutureProofMessage botPlatformRegistrationSuccessMessage = 131;
 	optional FutureProofMessage newsletterScheduledMessage = 132;
+	optional FutureProofMessage acp2SettingMessage = 133;
 }
 
 message AlbumMessage {

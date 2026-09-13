@@ -10,6 +10,7 @@ import (
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 	"go.mau.fi/whatsmeow/util/keys"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
@@ -62,6 +63,12 @@ func TestCompanionRegRefreshChildren(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			rotations := make(chan *events.RotateADVSecret, 1)
+			cli.AddEventHandler(func(evt any) {
+				if rotation, ok := evt.(*events.RotateADVSecret); ok {
+					rotations <- rotation
+				}
+			})
 			ref := []byte("current-ref")
 			cli.dispatchEvent(&qrRefsEvent{refs: [][]byte{ref, []byte("next-ref")}})
 			first := nextQR(t, ch)
@@ -79,6 +86,14 @@ func TestCompanionRegRefreshChildren(t *testing.T) {
 				return
 			}
 			second := nextQR(t, ch)
+			select {
+			case rotation := <-rotations:
+				if rotation.OldSecret != base64.StdEncoding.EncodeToString(oldSecret) || rotation.NewSecret != base64.StdEncoding.EncodeToString(cli.Store.AdvSecretKey) {
+					t.Fatal("rotation event secrets do not match QR refresh")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("missing ADV secret rotation event")
+			}
 			if len(cli.Store.AdvSecretKey) != 32 || string(cli.Store.AdvSecretKey) == string(oldSecret) {
 				t.Fatal("AdvSecretKey was not replaced with a new 32-byte key")
 			}

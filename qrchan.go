@@ -8,6 +8,7 @@ package whatsmeow
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"slices"
 	"sync"
@@ -145,9 +146,12 @@ func (qrc *qrChannel) emitQRs(refs [][]byte) {
 					qrc.cli.pairingLock.Unlock()
 					continue
 				}
+				oldSecret := base64.StdEncoding.EncodeToString(qrc.cli.Store.AdvSecretKey)
 				qrc.cli.Store.AdvSecretKey = random.Bytes(32)
+				newSecret := base64.StdEncoding.EncodeToString(qrc.cli.Store.AdvSecretKey)
 				refreshedCode := qrc.cli.makeQRData(currentRef, qrc.cli.getQRClientType())
 				qrc.cli.pairingLock.Unlock()
+				qrc.cli.dispatchEvent(&events.RotateADVSecret{OldSecret: oldSecret, NewSecret: newSecret})
 				if !qrc.emit(QRChannelItem{Code: refreshedCode, Timeout: timeout, Event: QRChannelEventCode}, false) {
 					qrc.log.Debugf("Output channel didn't accept refreshed code")
 				}
