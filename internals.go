@@ -447,8 +447,8 @@ func (int *DangerousInternalClient) HandleEncryptNotification(ctx context.Contex
 	int.c.handleEncryptNotification(ctx, node)
 }
 
-func (int *DangerousInternalClient) HandleAppStateNotification(ctx context.Context, node *waBinary.Node) {
-	int.c.handleAppStateNotification(ctx, node)
+func (int *DangerousInternalClient) HandleAppStateNotification(ctx context.Context, node *waBinary.Node) bool {
+	return int.c.handleAppStateNotification(ctx, node)
 }
 
 func (int *DangerousInternalClient) HandlePictureNotification(ctx context.Context, node *waBinary.Node) {
@@ -499,6 +499,10 @@ func (int *DangerousInternalClient) HandleNotification(ctx context.Context, node
 	int.c.handleNotification(ctx, node)
 }
 
+func (int *DangerousInternalClient) HandleCompanionRegRefresh(node *waBinary.Node) {
+	int.c.handleCompanionRegRefresh(node)
+}
+
 func (int *DangerousInternalClient) TryHandleCodePairNotification(ctx context.Context, parentNode *waBinary.Node) {
 	int.c.tryHandleCodePairNotification(ctx, parentNode)
 }
@@ -513,10 +517,6 @@ func (int *DangerousInternalClient) HandleIQ(ctx context.Context, node *waBinary
 
 func (int *DangerousInternalClient) HandlePairDevice(ctx context.Context, node *waBinary.Node) {
 	int.c.handlePairDevice(ctx, node)
-}
-
-func (int *DangerousInternalClient) RotateADVSecret(ctx context.Context) {
-	int.c.rotateADVSecret(ctx)
 }
 
 func (int *DangerousInternalClient) GetQRClientType() PairClientType {
